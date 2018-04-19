@@ -23,14 +23,7 @@
 
   Where [options] are some combination of the following:
 
-  --ip IP                : This flag informs Repy that it is allowed to bind to the given given IP.
-                         : This flag may be asserted multiple times.
-                         : Repy will attempt to use IP's and interfaces in the order they are given.
   --execinfo             : Display information regarding the current execution state. 
-  --iface interface      : This flag informs Repy that it is allowed to bind to the given interface.
-                         : This flag may be asserted multiple times.
-  --nootherips           : Instructs Repy to only use IP's and interfaces that are explicitly given.
-                         : It should be noted that loopback (127.0.0.1) is always permitted.
   --logfile filename.txt : Set up a circular log buffer and output to logfilename.txt
   --stop filename        : Repy will watch for the creation of this file and abort when it happens
                          : File can have format EXITCODE;EXITMESG. Code 44 is Stopped and is the default.
@@ -48,31 +41,26 @@ import time
 import optparse
 import threading
 
-# Relative imports
-
 # First make sure the version of python is supported
-import checkpythonversion
-checkpythonversion.ensure_python_version_is_supported()
+# STA: this is not necessarilly true for our target platforms.
+#import checkpythonversion
+#checkpythonversion.ensure_python_version_is_supported()
 
-import safe
-import nanny
-import emulcomm
-import idhelper
-import harshexit
-import namespace
-import nonportable
-import loggingrepy
-import statusstorage
-import repy_constants
-import nmstatusinterface
+import sandbox.safe as safe
+import util.harshexit as harshexit
+import sandbox.namespace as namespace
+import sandbox.nonportable as nonportable
+import logging.loggingrepy as loggingrepy
+#import util.statusstorage as statusstorage
+import util.repy_constants as repy_constants
 
 # Armon: Using VirtualNamespace as an abstraction around direct execution
-import virtual_namespace
+import util.virtual_namespace as virtual_namespace
 
 ## we'll use tracebackrepy to print our exceptions
-import tracebackrepy
+#import repy_exceptions.tracebackrepy as tracebackrepy
 
-from exception_hierarchy import *
+from repy_exceptions import *
 
 
 # Disables safe, and resumes normal fork
@@ -88,13 +76,12 @@ if "fork" in dir(os):
   os.fork = nonSafe_fork
 
 
-
 def get_safe_context(args):
 
 
   # These will be the functions and variables in the user's namespace (along
   # with the builtins allowed by the safe module).
-  usercontext = {'mycontext':{}}
+  usercontext = {}
   
   # Add to the user's namespace wrapped versions of the API functions we make
   # available to the untrusted user code.
@@ -110,9 +97,7 @@ def get_safe_context(args):
   usercontext['callfunc'] = 'initialize'
   usercontext['callargs'] = args[:]
 
-
   return usercontext
-
 
 
 
@@ -122,25 +107,17 @@ def execute_namespace_until_completion(thisnamespace, thiscontext):
   idlethreadcount =  threading.activeCount()
 
  
-  # add my thread to the set of threads that are used...
-  event_id = idhelper.getuniqueid()
-  try:
-    nanny.tattle_add_item('events', event_id)
-  except Exception, e:
-    tracebackrepy.handle_internalerror("Failed to acquire event for '" + \
-              "initialize' event.\n(Exception was: %s)" % e.message, 140)
- 
-  
   try:
     thisnamespace.evaluate(thiscontext)
   except SystemExit:
     raise
-  except:
+  except Exception as e:
     # I think it makes sense to exit if their code throws an exception...
-    tracebackrepy.handle_exception()
-    harshexit.harshexit(6)
+    #tracebackrepy.handle_exception()
+    print(e);
+    #harshexit.harshexit(6)
   finally:
-    nanny.tattle_remove_item('events', event_id)
+    pass
 
   # I've changed to the threading library, so this should increase if there are
   # pending events
@@ -183,21 +160,9 @@ def add_repy_options(parser):
   """Adds the Repy command-line options to the specified optparser
   """
 
-  parser.add_option('--ip',
-                    action="append", type="string", dest="ip" ,
-                    help="Explicitly allow Repy to bind to the specified IP. This option can be used multiple times."
-                    )
   parser.add_option('--execinfo',
                     action="store_true", dest="execinfo", default=False,
                     help="Display information regarding the current execution state."
-                    )
-  parser.add_option('--iface',
-                    action="append", type="string", dest="interface",
-                    help="Explicitly allow Repy to bind to the specified interface. This option can be used multiple times."
-                    )
-  parser.add_option('--nootherips',
-                    action="store_true", dest="nootherips",default=False,
-                    help="Do not allow IPs or interfaces that are not explicitly specified"
                     )
   parser.add_option('--logfile',
                     action="store", type="string", dest="logfile",
@@ -222,31 +187,9 @@ def add_repy_options(parser):
     
 def parse_options(options):
   """ Parse the specified options and initialize all required structures
-  Note: This modifies global state, specifically, the emulcomm module
+  Note: 
   """
-  if options.ip:
-    emulcomm.user_ip_interface_preferences = True
-
-    # Append this ip to the list of available ones if it is new
-    for ip in options.ip:
-      if (True, ip) not in emulcomm.user_specified_ip_interface_list:
-        emulcomm.user_specified_ip_interface_list.append((True, ip))
-
-  if options.interface:
-    emulcomm.user_ip_interface_preferences = True
-      
-    # Append this interface to the list of available ones if it is new
-    for interface in options.interface:
-      if (False, interface) not in emulcomm.user_specified_ip_interface_list:
-        emulcomm.user_specified_ip_interface_list.append((False, interface))
-
-  # Check if they have told us to only use explicitly allowed IP's and interfaces
-  if options.nootherips:
-    # Set user preference to True
-    emulcomm.user_ip_interface_preferences = True
-    # Disable nonspecified IP's
-    emulcomm.allow_nonspecified_ips = False
-    
+   
   # set up the circular log buffer...
   # Armon: Initialize the circular logger before starting the nanny
   if options.logfile:
@@ -262,7 +205,7 @@ def parse_options(options):
   # We also need to pass in whether or not we are going to be using the service
   # log for repy.  We provide the repy directory so that the vessel information
   # can be found regardless of where we are called from...
-  tracebackrepy.initialize(options.servicelog, repy_constants.REPY_START_DIR)
+  #tracebackrepy.initialize(options.servicelog, repy_constants.REPY_START_DIR)
 
   # Set Current Working Directory
   if options.cwd:
@@ -271,25 +214,18 @@ def parse_options(options):
   # Update repy current directory
   repy_constants.REPY_CURRENT_DIR = os.path.abspath(os.getcwd())
 
-  # Initialize the NM status interface
-  nmstatusinterface.init(options.stopfile, options.statusfile)
-  
   # Write out our initial status
-  statusstorage.write_status("Started")
-
+  # statusstorage.write_status("Started")
 
 
 
 def initialize_nanny(resourcefn):
   # start the nanny up and read the resource file.  
   # JAC: Should this take a string instead?
-  nanny.start_resource_nanny(resourcefn)
+  #nanny.start_resource_nanny(resourcefn)
 
   # now, let's fire up the cpu / disk / memory monitor...
   nonportable.monitor_cpu_disk_and_mem()
-
-  # JAC: I believe this is needed for interface / ip-based restrictions
-  emulcomm.update_ip_cache()
 
 
 
@@ -297,7 +233,6 @@ def main():
   # JAC: This function should be kept as stable if possible.   Others who
   # extend Repy may be doing essentially the same thing in their main and
   # your changes may not be reflected there!
-
 
   # Armon: The CMD line path to repy is the first argument
   repy_location = sys.argv[0]
@@ -307,7 +242,6 @@ def main():
   
   init_repy_location(repy_directory)
   
-
   ### PARSE OPTIONS.   These are command line in our case, but could be from
   ### anywhere if this is repurposed...
   usage = "USAGE: repy.py [options] resource_file program_to_run.r2py [program args]"
@@ -325,7 +259,7 @@ def main():
   options, args = parser.parse_args()
   
   if len(args) < 2:
-    print "Repy requires a resource file and the program to run!"
+    print("Repy requires a resource file and the program to run!")
     parser.print_help()
     sys.exit(1)
   
@@ -333,11 +267,12 @@ def main():
   progname = args[1]
   progargs = args[2:]
   
+  #import pdb; pdb.set_trace() 
   # Do a huge amount of initialization.
   parse_options(options)
   
   ### start resource restrictions, etc. for the nanny
-  initialize_nanny(resourcefn)
+  #initialize_nanny(resourcefn)
 
   # Read the user code from the file
   try:
@@ -345,39 +280,44 @@ def main():
     usercode = filehandle.read()
     filehandle.close()
   except:
-    print "FATAL ERROR: Unable to read the specified program file: '%s'" % (progname)
+    print(("FATAL ERROR: Unable to read the specified program file: '%s'".format(progname)))
     sys.exit(1)
 
   # create the namespace...
   try:
     newnamespace = virtual_namespace.VirtualNamespace(usercode, progname)
-  except CodeUnsafeError, e:
-    print "Specified repy program is unsafe!"
-    print "Static-code analysis failed with error: "+str(e)
+  except CodeUnsafeError as e:
+    print("Specified repy program is unsafe!")
+    print(("Static-code analysis failed with error: ".format(e)))
     harshexit.harshexit(5)
 
   # allow the (potentially large) code string to be garbage collected
   del usercode
 
-
-
   # Insert program log separator and execution information
   if options.execinfo:
-    print '=' * 40
-    print "Running program:", progname
-    print "Arguments:", progargs
-    print '=' * 40
-
+    print(('=' * 40))
+    print(("Running program:", progname))
+    print(("Arguments:", progargs))
+    print(('=' * 40))
 
 
   # get a new namespace
   newcontext = get_safe_context(progargs)
+  newcontext['document'] = {
+      "final-product":"in_toto-0.2.2.tar.gz",
+      "layout": "bleepblop",
+      "links": [],
+      "custom": {}
+    }
 
   # one could insert a new function for repy code here by changing newcontext 
   # to contain an additional function.
 
   # run the code to completion...
   execute_namespace_until_completion(newnamespace, newcontext)
+
+  print("Sandbox execution ended. Resulting context:\n\t{}".format(newcontext['document']))
 
   # No more pending events for the user thread, we exit
   harshexit.harshexit(0)
@@ -390,5 +330,6 @@ if __name__ == '__main__':
   except SystemExit:
     harshexit.harshexit(4)
   except:
-    tracebackrepy.handle_exception()
+    raise
+    #tracebackrepy.handle_exception()
     harshexit.harshexit(3)

@@ -1,0 +1,2 @@
+log("Verifying... {}".format(document['final-product']))
+document['custom']['packagename'] = document['final-product'].split('-')[0]
